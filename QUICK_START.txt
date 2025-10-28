@@ -1,11 +1,11 @@
 """
-🚀 快速安装指南 - 智能产品拼接节点
+🚀 快速安装指南 - 智能产品拼接节点 v2.0
 ========================================
 
 📦 需要的文件（共3个）
 -------------------
 ✅ __init__.py
-✅ smart_collage_enterprise_v32_scale_fixed.py  
+✅ smart_collage_enterprise.py
 ✅ smart_collage_batch.py
 
 📂 安装位置
@@ -33,19 +33,71 @@ Linux/Mac 用户:
 ----------
 在ComfyUI中搜索 "智能产品拼接"
 应该看到2个节点:
-  - 智能产品拼接·企业版v3.2✅
-  - 智能产品拼接·批量版v1.0🔁
+  ✨ 智能产品拼接·内部抠图v2.0🎨✨ (推荐)
+  ✅ 智能产品拼接·企业版v3.2✅
 
 🎯 快速开始
 ----------
 
-简单拼接 (2张图):
-  LoadImage → SmartProductCollageV32 → PreviewImage
+【案例1】简单拼接 (2张图):
+  LoadImage → SmartProductCollageBatch → PreviewImage
+  设置: images_per_collage = 2
 
-批量拼接 (100张图):
-  AD_AnyFileList → ImageListToImageBatch → 
-  SmartProductCollageBatch(images_per_collage=2) → 
+【案例2】批量拼接 (100张图):
+  AD_AnyFileList → ImageListToImageBatch →
+  SmartProductCollageBatch (images_per_collage=2) →
   PreviewImage
+  输出: 50张拼接图
+
+【案例3】带标签拼接:
+  ImageListToImageBatch →
+  SmartProductCollageBatch
+    - images_per_collage: 3
+    - labels: "7pcs\n5pcs\n3pcs"
+    - label_position: bottom
+  → PreviewImage
+
+【案例4】项链拼接（自动识别）:
+  LoadImage × 3 (项链、手镯、手链) →
+  SmartProductCollageBatch
+    - images_per_collage: 3
+    - layout: auto  ← 自动识别项链作为主图
+  → PreviewImage
+
+🌟 核心特性 (v2.0)
+-----------------
+✨ 智能抠图 - 自动去背景，保留阴影
+✨ 智能布局 - auto模式自动选择最佳布局
+✨ 链条识别 - 3个产品时自动识别项链/手链
+✨ 标签支持 - 中文/数字标签，自动对齐
+✨ 批量处理 - 支持任意数量图片
+
+📊 布局模式说明
+-------------
+layout: auto (推荐)
+  - 1个产品 → 单个居中
+  - 2个产品 → 横排
+  - 3个产品 → 智能判断（链条→主次布局，否则→横排）
+  - 4+个产品 → 网格
+
+layout: horizontal - 横排布局
+layout: vertical - 竖排布局
+layout: grid - 网格布局
+layout: adaptive_focus - 智能主次布局（突出主产品）
+
+🔧 常用参数
+----------
+images_per_collage: 2        # 每组几张图 (1-9)
+layout: auto                 # 布局模式
+output_width: 1600           # 输出宽度
+output_height: 1600          # 输出高度
+spacing: 60                  # 产品间距
+product_scale: 1.0           # 产品缩放 (0.3-2.0)
+
+标签参数:
+labels: "7pcs,5pcs,3pcs"    # 标签文本（逗号或换行分隔）
+label_position: bottom       # 标签位置 (bottom/top/none)
+label_font_size: 180         # 字体大小
 
 📖 详细说明
 ----------
@@ -56,7 +108,23 @@ Linux/Mac 用户:
 1. 确认3个文件都在正确的文件夹
 2. 完全重启ComfyUI（关闭所有窗口）
 3. 查看终端是否有错误信息
-4. 确认已安装 opencv-python: pip install opencv-python
+4. 确认已安装依赖:
+   pip install opencv-python numpy torch pillow
+
+💡 使用技巧
+----------
+1. 优先使用 layout: auto，智能判断最佳布局
+2. 标签数量必须等于 images_per_collage
+3. 3个产品时会自动识别链条并优化布局
+4. 批量处理建议 skip_empty: true
+
+🎨 v2.0 新增功能
+---------------
+✨ 内部智能抠图（无需外部mask）
+✨ 智能链条识别（自动优化布局）
+✨ 标签支持（中文/数字）
+✨ 圆度检测算法
+✨ 保留产品阴影效果
 
 ✨ 享受使用!
 """
