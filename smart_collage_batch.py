@@ -54,7 +54,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 class SmartProductCollageBatch:
     """批量产品拼接节点 - 内部抠图版"""
-    
+
     def __init__(self):
         self.supported_fonts = [
             "arial.ttf",
@@ -592,55 +592,24 @@ class SmartProductCollageBatch:
 
         # 🔧 只有数量等于3时，才检测链条来决定是否使用 adaptive_focus
         if products and layout == "auto" and num_products == 3:
-            chain_products = []  # 存储所有链条产品的信息 {index, circularity, is_chain, ...}
+            chain_products = []  # 存储所有链条产品的信息
 
             for idx, p in enumerate(products):
                 h, w = p.shape[:2]
+
+                # 🎯 核心逻辑：直接使用圆度判断是否为闭合环
+                circularity = self.calculate_circularity(p)
+
+                # 🔧 简化的链条特征检测
                 gray = cv2.cvtColor(p, cv2.COLOR_BGR2GRAY)
                 mask = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)[1]
 
-                # 🔧 基于骨架分析识别链条
-                # 链条的核心特征：细长的连续曲线，宽度基本一致
-
-                # 1. 形态学骨架提取（获取中心线）
-                from cv2 import ximgproc
-                try:
-                    # 使用形态学细化提取骨架
-                    skeleton = cv2.ximgproc.thinning(mask, thinningType=cv2.ximgproc.THINNING_ZHANGSUEN)
-                except:
-                    # 如果没有ximgproc，使用简化的骨架提取
-                    skeleton = mask.copy()
-                    element = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
-                    while True:
-                        opened = cv2.morphologyEx(skeleton, cv2.MORPH_OPEN, element)
-                        temp = cv2.subtract(skeleton, opened)
-                        eroded = cv2.erode(skeleton, element)
-                        skeleton = eroded
-                        if cv2.countNonZero(temp) == 0:
-                            break
-
-                # 2. 计算骨架特征
-                skeleton_pixels = np.sum(skeleton > 0)
-                mask_pixels = np.sum(mask > 0)
+                # 特征1: 稀疏度（链条占比小）
                 total_pixels = h * w
-
-                # 链条特征1：骨架像素占比（链条的骨架接近本体）
-                if mask_pixels > 0:
-                    skeleton_ratio = skeleton_pixels / mask_pixels
-                else:
-                    skeleton_ratio = 0
-
-                # 链条特征2：稀疏度（整体占比小）
+                mask_pixels = np.sum(mask > 0)
                 area_ratio = mask_pixels / total_pixels
 
-                # 链条特征3：细长度（通过骨架长度vs面积）
-                if skeleton_pixels > 0 and mask_pixels > 0:
-                    # 骨架长度vs面积的比值，链条应该很高
-                    thinness = skeleton_pixels / (mask_pixels ** 0.5)
-                else:
-                    thinness = 0
-
-                # 链条特征4：检测边缘延伸（开放式链条）
+                # 特征2: 边缘延伸（开放式链条会延伸到边缘）
                 h_margin = max(1, int(h * 0.05))
                 w_margin = max(1, int(w * 0.05))
                 edge_mask_pixels = (
@@ -651,105 +620,34 @@ class SmartProductCollageBatch:
                 )
                 edge_touch_ratio = edge_mask_pixels / mask_pixels if mask_pixels > 0 else 0
 
-                # 🔧 新增：端点检测（核心特征）
-                # 端点定义：骨架上只有1个邻居的像素点
-                skeleton_binary = (skeleton > 0).astype(np.uint8)
-                kernel_3x3 = np.ones((3, 3), np.uint8)
-                # 计算每个骨架像素的邻居数量（减去自身）
-                neighbor_count = cv2.filter2D(skeleton_binary, -1, kernel_3x3) - skeleton_binary
-                # 端点：骨架像素 && 只有1个邻居
-                endpoints = np.logical_and(skeleton_binary == 1, neighbor_count == 1)
-                endpoint_count = np.sum(endpoints)
-
-                # 🔧 新增：闭合检测
-                # 检查骨架是否形成闭合环（如手镯）
-                is_closed_loop = False
-                if endpoint_count <= 2 and skeleton_pixels > 50:
-                    # 获取骨架像素的坐标
-                    y_coords, x_coords = np.where(skeleton_binary == 1)
-                    if len(y_coords) > 10:
-                        # 计算骨架起点和终点的距离
-                        start_point = (y_coords[0], x_coords[0])
-                        end_point = (y_coords[-1], x_coords[-1])
-                        endpoint_dist = np.sqrt((start_point[0] - end_point[0])**2 +
-                                               (start_point[1] - end_point[1])**2)
-                        # 如果端点距离 < 骨架总长度的10%，判定为闭合环
-                        if endpoint_dist < skeleton_pixels * 0.1:
-                            is_closed_loop = True
-
-                # 🔧 链条判定标准（基于骨架分析 + 端点分析）
+                # 🔧 链条判定（简化版）
                 is_chain = False
-                chain_score = 0
 
-                # 1️⃣ 端点数量（最关键特征）- 5分
-                # 开放链条：2-4个端点 → +5分（考虑带挂坠的项链）
-                # 闭合环：0-1个端点 → +2分（分数较低）
-                # 多分支（手套）：7+个端点 → -5分（直接排除）
-                if endpoint_count > 7:
-                    chain_score -= 5  # 多分支物体，明确排除
-                    print(f"   ❌ 检测到多分支物体 (端点数={endpoint_count})，排除链条判定")
-                elif 2 <= endpoint_count <= 4:
-                    chain_score += 5  # 开放链条（含带挂坠的项链）
-                elif endpoint_count <= 1:
-                    chain_score += 2  # 可能是闭合环，给予较低分
-                else:
-                    # 5-7个端点：不太像链条，但也不完全排除
-                    chain_score += 0
+                # 🎯 简化判定逻辑（基于实际测试）
+                # 核心发现：
+                # - 闭合手镯：圆度 > 0.6
+                # - 开放项链/手链：圆度 < 0.5，且稀疏（< 0.2）
+                #
+                # 测试数据：
+                # - 产品1: 圆度0.187, 稀疏0.130 → 应该是链条
+                # - 产品2: 圆度0.319, 稀疏0.140 → 应该是链条
+                # - 产品3: 圆度0.377, 稀疏0.153 → 应该是链条
 
-                # 2️⃣ 闭合检测（减分项）- -3分
-                if is_closed_loop:
-                    chain_score -= 3  # 闭合环（如手镯）不应作为主图
-                    print(f"   ℹ️ 检测到闭合环形，降低链条评分")
-
-                # 3️⃣ 稀疏度 - 3分
-                if area_ratio < 0.25:
-                    chain_score += 3
-                elif area_ratio < 0.35:
-                    chain_score += 1
-
-                # 4️⃣ 骨架比例（线性度）- 3分
-                if skeleton_ratio > 0.3:
-                    chain_score += 3
-                elif skeleton_ratio > 0.2:
-                    chain_score += 1
-
-                # 5️⃣ 细长度 - 2分
-                if thinness > 2.0:
-                    chain_score += 2
-                elif thinness > 1.5:
-                    chain_score += 1
-
-                # 6️⃣ 边缘延伸（只有非闭合链条才加分）- 2分
-                if edge_touch_ratio > 0.15 and not is_closed_loop:
-                    chain_score += 2
-                elif edge_touch_ratio > 0.08 and not is_closed_loop:
-                    chain_score += 1
-
-                # 判定标准：
-                # - 开放链条（2-4个端点 + 高分）≥ 10分 → 作为主图
-                # - 闭合环或多分支物体 → 得分会很低，不会被判定为链条
-                # - 必须端点数 ≤ 6（排除手套等多分支物体）
-                if chain_score >= 10 and endpoint_count <= 6 and not is_closed_loop:
+                # 🔧 新判定标准（更宽松）：
+                # 圆度 < 0.5 AND 稀疏度 < 0.2
+                if circularity < 0.5 and area_ratio < 0.2:
                     is_chain = True
-                    # 计算圆度（用于3个产品时选择主图）
-                    circularity = self.calculate_circularity(p)
-
                     chain_products.append({
                         'index': idx,
-                        'is_chain': True,
                         'circularity': circularity,
-                        'is_closed_loop': is_closed_loop,
-                        'chain_score': chain_score,
-                        'endpoint_count': endpoint_count
+                        'area_ratio': area_ratio,
+                        'edge_touch_ratio': edge_touch_ratio
                     })
 
-                    print(f"   🔗 产品{idx+1}: 检测到开放链条 (得分: {chain_score}/15, 端点数: {endpoint_count}, 圆度: {circularity:.2f})")
-                    print(f"      骨架比: {skeleton_ratio:.2f}, 稀疏度: {area_ratio:.2f}, "
-                          f"细长度: {thinness:.2f}, 边缘: {edge_touch_ratio:.2f}")
-                elif chain_score >= 5 or endpoint_count > 7:
-                    # 显示调试信息（接近阈值或多分支物体）
-                    print(f"   ℹ️ 产品{idx+1}: 链条评分: {chain_score}/15 (端点数: {endpoint_count}, "
-                          f"闭合环: {'是' if is_closed_loop else '否'}) → 不判定为链条")
+                    print(f"   🔗 产品{idx+1}: 检测到开放链条")
+                    print(f"      圆度: {circularity:.3f}, 稀疏度: {area_ratio:.3f}, 边缘延伸: {edge_touch_ratio:.3f}")
+                else:
+                    print(f"   ℹ️ 产品{idx+1}: 非链条 (圆度: {circularity:.3f}, 稀疏度: {area_ratio:.3f}, 边缘: {edge_touch_ratio:.3f})")
 
             # 如果检测到链条，选择圆度最低的作为主图
             if len(chain_products) > 0:
