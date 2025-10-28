@@ -57,12 +57,14 @@ class SmartProductCollageBatch:
     
     def __init__(self):
         self.supported_fonts = [
-            "arial.ttf", 
-            "simhei.ttf", 
+            "arial.ttf",
+            "simhei.ttf",
             "PingFang.ttc",
-            "wqy-microhei.ttc", 
+            "wqy-microhei.ttc",
             "msyh.ttf"
         ]
+        # 用于存储智能布局时选定的主产品索引
+        self.forced_main_product_index = None
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -290,6 +292,78 @@ class SmartProductCollageBatch:
 
         return result.astype(np.uint8)
 
+    def calculate_circularity(self, product: np.ndarray) -> float:
+        """
+        计算产品主体的圆度（圆形度）
+
+        返回: 0.0-1.0 的圆度分数
+            - 接近1.0: 很圆（如手镯、圆形吊坠）
+            - 接近0.0: 不圆（如链条、不规则形状）
+        """
+        h, w = product.shape[:2]
+        gray = cv2.cvtColor(product, cv2.COLOR_BGR2GRAY)
+        mask = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)[1]
+
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        if not contours:
+            return 0.0
+
+        # 选择最大轮廓（主体）
+        largest_contour = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(largest_contour)
+
+        if area < 100:  # 面积太小，无法判断
+            return 0.0
+
+        # 方法1: 圆形度 = 4π × 面积 / 周长²
+        # 完美圆形的值为1.0，形状越不规则值越小
+        perimeter = cv2.arcLength(largest_contour, True)
+        if perimeter == 0:
+            return 0.0
+        circularity = (4 * np.pi * area) / (perimeter ** 2)
+
+        # 方法2: 使用最小外接圆
+        (x, y), radius = cv2.minEnclosingCircle(largest_contour)
+        circle_area = np.pi * (radius ** 2)
+        circle_fill_ratio = area / circle_area if circle_area > 0 else 0
+
+        # 方法3: 轮廓到质心的距离方差（圆形的距离方差很小）
+        M = cv2.moments(largest_contour)
+        if M['m00'] != 0:
+            cx = int(M['m10'] / M['m00'])
+            cy = int(M['m01'] / M['m00'])
+
+            # 计算所有轮廓点到质心的距离
+            distances = []
+            for point in largest_contour:
+                px, py = point[0]
+                dist = np.sqrt((px - cx) ** 2 + (py - cy) ** 2)
+                distances.append(dist)
+
+            if len(distances) > 0:
+                # 归一化标准差（圆形的标准差接近0）
+                mean_dist = np.mean(distances)
+                std_dist = np.std(distances)
+                normalized_std = std_dist / mean_dist if mean_dist > 0 else 1.0
+                distance_uniformity = max(0, 1.0 - normalized_std)  # 越接近1越圆
+            else:
+                distance_uniformity = 0.0
+        else:
+            distance_uniformity = 0.0
+
+        # 综合评分（加权平均）
+        final_circularity = (
+            circularity * 0.4 +           # 周长面积比
+            circle_fill_ratio * 0.3 +     # 外接圆填充率
+            distance_uniformity * 0.3     # 距离均匀性
+        )
+
+        # 限制在0-1范围
+        final_circularity = max(0.0, min(1.0, final_circularity))
+
+        return final_circularity
+
     def get_product_features(self, product: np.ndarray) -> Tuple[float, float, float, bool]:
         """
         🔧 修复3: 改进链条识别算法 - 优先识别开放性链条
@@ -387,6 +461,110 @@ class SmartProductCollageBatch:
 
         return area_ratio, aspect_ratio, edge_density, is_chain
 
+    def calculate_product_similarity(self, product1: np.ndarray, product2: np.ndarray) -> float:
+        """
+        计算两个产品的相似度（基于形状而非颜色）
+
+        返回: 0.0-1.0 的相似度分数，1.0表示完全相同
+        """
+        # 调整大小到相同尺寸以便比较
+        h1, w1 = product1.shape[:2]
+        h2, w2 = product2.shape[:2]
+        target_size = (200, 200)  # 统一尺寸
+
+        resized1 = cv2.resize(product1, target_size, interpolation=cv2.INTER_AREA)
+        resized2 = cv2.resize(product2, target_size, interpolation=cv2.INTER_AREA)
+
+        # 提取mask（用于形状比较）
+        gray1 = cv2.cvtColor(resized1, cv2.COLOR_BGR2GRAY)
+        gray2 = cv2.cvtColor(resized2, cv2.COLOR_BGR2GRAY)
+        mask1 = cv2.threshold(gray1, 240, 255, cv2.THRESH_BINARY_INV)[1]
+        mask2 = cv2.threshold(gray2, 240, 255, cv2.THRESH_BINARY_INV)[1]
+
+        # 方法1: 形状相似度（Hu矩）- 40%权重
+        # Hu矩是形状的7个不变特征，不受颜色、尺度、旋转影响
+        contours1, _ = cv2.findContours(mask1, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours2, _ = cv2.findContours(mask2, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        shape_similarity = 0.0
+        if contours1 and contours2:
+            # 选择最大轮廓
+            contour1 = max(contours1, key=cv2.contourArea)
+            contour2 = max(contours2, key=cv2.contourArea)
+
+            # 计算Hu矩
+            hu1 = cv2.HuMoments(cv2.moments(contour1)).flatten()
+            hu2 = cv2.HuMoments(cv2.moments(contour2)).flatten()
+
+            # 使用对数尺度比较（Hu矩值范围很大）
+            hu1_log = -np.sign(hu1) * np.log10(np.abs(hu1) + 1e-10)
+            hu2_log = -np.sign(hu2) * np.log10(np.abs(hu2) + 1e-10)
+
+            # 计算欧氏距离并归一化到0-1
+            hu_distance = np.linalg.norm(hu1_log - hu2_log)
+            shape_similarity = max(0.0, 1.0 - hu_distance / 10.0)  # 距离越小相似度越高
+
+        # 方法2: Mask重叠度（IoU）- 35%权重
+        intersection = np.logical_and(mask1 > 0, mask2 > 0)
+        union = np.logical_or(mask1 > 0, mask2 > 0)
+        iou = np.sum(intersection) / np.sum(union) if np.sum(union) > 0 else 0.0
+
+        # 方法3: 边缘相似度（基于Canny边缘检测）- 15%权重
+        edges1 = cv2.Canny(mask1, 50, 150)
+        edges2 = cv2.Canny(mask2, 50, 150)
+        edge_diff = cv2.absdiff(edges1, edges2)
+        edge_similarity = 1.0 - (np.sum(edge_diff > 0) / (target_size[0] * target_size[1]))
+
+        # 方法4: 宽高比相似度 - 10%权重
+        aspect1 = w1 / h1 if h1 > 0 else 1.0
+        aspect2 = w2 / h2 if h2 > 0 else 1.0
+        aspect_similarity = 1.0 - min(abs(aspect1 - aspect2) / max(aspect1, aspect2), 1.0)
+
+        # 综合相似度（加权平均，侧重形状特征）
+        similarity = (
+            shape_similarity * 0.40 +    # Hu矩形状匹配
+            iou * 0.35 +                  # Mask重叠度
+            edge_similarity * 0.15 +      # 边缘相似度
+            aspect_similarity * 0.10      # 宽高比
+        )
+
+        return max(0.0, min(1.0, similarity))
+
+    def detect_duplicate_products(self, products: List[np.ndarray], threshold: float = 0.85) -> bool:
+        """
+        检测是否所有产品都是重复的（相似度高）
+
+        参数:
+            threshold: 相似度阈值，高于此值认为是重复产品
+
+        返回:
+            True 如果所有产品都相似（重复）
+        """
+        if len(products) <= 1:
+            return False
+
+        # 计算所有产品之间的相似度
+        similarities = []
+        for i in range(len(products)):
+            for j in range(i + 1, len(products)):
+                similarity = self.calculate_product_similarity(products[i], products[j])
+                similarities.append(similarity)
+
+        if not similarities:
+            return False
+
+        # 所有产品对的平均相似度
+        avg_similarity = np.mean(similarities)
+        min_similarity = np.min(similarities)
+
+        # 判断标准：平均相似度高且最低相似度也高
+        is_duplicate = avg_similarity > threshold and min_similarity > (threshold - 0.1)
+
+        if is_duplicate:
+            print(f"   🔍 检测到重复产品 (平均相似度: {avg_similarity:.2f}, 最低: {min_similarity:.2f})")
+
+        return is_duplicate
+
     def decide_layout(self, num_products: int, layout: str, products: List[np.ndarray] = None) -> str:
         """
         决定布局方式
@@ -401,57 +579,206 @@ class SmartProductCollageBatch:
         """
         if layout != "auto" and layout != "adaptive_focus":
             return layout
+
         # auto: 自动选择
         if num_products == 1:
             return "single"
-        elif num_products == 2:
+
+        if num_products == 2:
             return "horizontal"
-        elif num_products >= 4:
+
+        if num_products > 3:
             return "grid"
-        # adaptive_focus: 智能主次布局（使用增强的链条识别）
-        if layout == "auto":
-            if num_products > 2 and products:
-                # 🔧 使用增强的链条识别算法判断
-                has_necklace = False
 
-                for p in products:
-                    h, w = p.shape[:2]
-                    aspect_ratio = w / h
+        # 🔧 只有数量等于3时，才检测链条来决定是否使用 adaptive_focus
+        if products and layout == "auto" and num_products == 3:
+            chain_products = []  # 存储所有链条产品的信息 {index, circularity, is_chain, ...}
 
-                    # 检测链条特征
-                    if aspect_ratio > 1.3 or aspect_ratio < 0.77:
-                        gray = cv2.cvtColor(p, cv2.COLOR_BGR2GRAY)
-                        edges = cv2.Canny(gray, 30, 100)
+            for idx, p in enumerate(products):
+                h, w = p.shape[:2]
+                gray = cv2.cvtColor(p, cv2.COLOR_BGR2GRAY)
+                mask = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)[1]
 
-                        h_margin = max(1, int(h * 0.05))
-                        w_margin = max(1, int(w * 0.05))
+                # 🔧 基于骨架分析识别链条
+                # 链条的核心特征：细长的连续曲线，宽度基本一致
 
-                        top_density = np.sum(edges[0:h_margin, :]) / (h_margin * w)
-                        bottom_density = np.sum(edges[-h_margin:, :]) / (h_margin * w)
-                        left_density = np.sum(edges[:, 0:w_margin]) / (h * w_margin)
-                        right_density = np.sum(edges[:, -w_margin:]) / (h * w_margin)
-
-                        edge_touches = sum([
-                            top_density > 0.05,
-                            bottom_density > 0.05,
-                            left_density > 0.05,
-                            right_density > 0.05
-                        ])
-
-                        if edge_touches >= 2:
-                            has_necklace = True
+                # 1. 形态学骨架提取（获取中心线）
+                from cv2 import ximgproc
+                try:
+                    # 使用形态学细化提取骨架
+                    skeleton = cv2.ximgproc.thinning(mask, thinningType=cv2.ximgproc.THINNING_ZHANGSUEN)
+                except:
+                    # 如果没有ximgproc，使用简化的骨架提取
+                    skeleton = mask.copy()
+                    element = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+                    while True:
+                        opened = cv2.morphologyEx(skeleton, cv2.MORPH_OPEN, element)
+                        temp = cv2.subtract(skeleton, opened)
+                        eroded = cv2.erode(skeleton, element)
+                        skeleton = eroded
+                        if cv2.countNonZero(temp) == 0:
                             break
 
-                # 如果检测到链条，使用adaptive_focus
-                if has_necklace:
-                    return "adaptive_focus"
+                # 2. 计算骨架特征
+                skeleton_pixels = np.sum(skeleton > 0)
+                mask_pixels = np.sum(mask > 0)
+                total_pixels = h * w
 
-                # 否则按面积判断
-                areas = [p.shape[0] * p.shape[1] for p in products]
-                sorted_areas = sorted(areas, reverse=True)
-                if len(sorted_areas) >= 2 and sorted_areas[0] > sorted_areas[1] * 1.5:
+                # 链条特征1：骨架像素占比（链条的骨架接近本体）
+                if mask_pixels > 0:
+                    skeleton_ratio = skeleton_pixels / mask_pixels
+                else:
+                    skeleton_ratio = 0
+
+                # 链条特征2：稀疏度（整体占比小）
+                area_ratio = mask_pixels / total_pixels
+
+                # 链条特征3：细长度（通过骨架长度vs面积）
+                if skeleton_pixels > 0 and mask_pixels > 0:
+                    # 骨架长度vs面积的比值，链条应该很高
+                    thinness = skeleton_pixels / (mask_pixels ** 0.5)
+                else:
+                    thinness = 0
+
+                # 链条特征4：检测边缘延伸（开放式链条）
+                h_margin = max(1, int(h * 0.05))
+                w_margin = max(1, int(w * 0.05))
+                edge_mask_pixels = (
+                    np.sum(mask[0:h_margin, :] > 0) +
+                    np.sum(mask[-h_margin:, :] > 0) +
+                    np.sum(mask[:, 0:w_margin] > 0) +
+                    np.sum(mask[:, -w_margin:] > 0)
+                )
+                edge_touch_ratio = edge_mask_pixels / mask_pixels if mask_pixels > 0 else 0
+
+                # 🔧 新增：端点检测（核心特征）
+                # 端点定义：骨架上只有1个邻居的像素点
+                skeleton_binary = (skeleton > 0).astype(np.uint8)
+                kernel_3x3 = np.ones((3, 3), np.uint8)
+                # 计算每个骨架像素的邻居数量（减去自身）
+                neighbor_count = cv2.filter2D(skeleton_binary, -1, kernel_3x3) - skeleton_binary
+                # 端点：骨架像素 && 只有1个邻居
+                endpoints = np.logical_and(skeleton_binary == 1, neighbor_count == 1)
+                endpoint_count = np.sum(endpoints)
+
+                # 🔧 新增：闭合检测
+                # 检查骨架是否形成闭合环（如手镯）
+                is_closed_loop = False
+                if endpoint_count <= 2 and skeleton_pixels > 50:
+                    # 获取骨架像素的坐标
+                    y_coords, x_coords = np.where(skeleton_binary == 1)
+                    if len(y_coords) > 10:
+                        # 计算骨架起点和终点的距离
+                        start_point = (y_coords[0], x_coords[0])
+                        end_point = (y_coords[-1], x_coords[-1])
+                        endpoint_dist = np.sqrt((start_point[0] - end_point[0])**2 +
+                                               (start_point[1] - end_point[1])**2)
+                        # 如果端点距离 < 骨架总长度的10%，判定为闭合环
+                        if endpoint_dist < skeleton_pixels * 0.1:
+                            is_closed_loop = True
+
+                # 🔧 链条判定标准（基于骨架分析 + 端点分析）
+                is_chain = False
+                chain_score = 0
+
+                # 1️⃣ 端点数量（最关键特征）- 5分
+                # 开放链条：2-4个端点 → +5分（考虑带挂坠的项链）
+                # 闭合环：0-1个端点 → +2分（分数较低）
+                # 多分支（手套）：7+个端点 → -5分（直接排除）
+                if endpoint_count > 7:
+                    chain_score -= 5  # 多分支物体，明确排除
+                    print(f"   ❌ 检测到多分支物体 (端点数={endpoint_count})，排除链条判定")
+                elif 2 <= endpoint_count <= 4:
+                    chain_score += 5  # 开放链条（含带挂坠的项链）
+                elif endpoint_count <= 1:
+                    chain_score += 2  # 可能是闭合环，给予较低分
+                else:
+                    # 5-7个端点：不太像链条，但也不完全排除
+                    chain_score += 0
+
+                # 2️⃣ 闭合检测（减分项）- -3分
+                if is_closed_loop:
+                    chain_score -= 3  # 闭合环（如手镯）不应作为主图
+                    print(f"   ℹ️ 检测到闭合环形，降低链条评分")
+
+                # 3️⃣ 稀疏度 - 3分
+                if area_ratio < 0.25:
+                    chain_score += 3
+                elif area_ratio < 0.35:
+                    chain_score += 1
+
+                # 4️⃣ 骨架比例（线性度）- 3分
+                if skeleton_ratio > 0.3:
+                    chain_score += 3
+                elif skeleton_ratio > 0.2:
+                    chain_score += 1
+
+                # 5️⃣ 细长度 - 2分
+                if thinness > 2.0:
+                    chain_score += 2
+                elif thinness > 1.5:
+                    chain_score += 1
+
+                # 6️⃣ 边缘延伸（只有非闭合链条才加分）- 2分
+                if edge_touch_ratio > 0.15 and not is_closed_loop:
+                    chain_score += 2
+                elif edge_touch_ratio > 0.08 and not is_closed_loop:
+                    chain_score += 1
+
+                # 判定标准：
+                # - 开放链条（2-4个端点 + 高分）≥ 10分 → 作为主图
+                # - 闭合环或多分支物体 → 得分会很低，不会被判定为链条
+                # - 必须端点数 ≤ 6（排除手套等多分支物体）
+                if chain_score >= 10 and endpoint_count <= 6 and not is_closed_loop:
+                    is_chain = True
+                    # 计算圆度（用于3个产品时选择主图）
+                    circularity = self.calculate_circularity(p)
+
+                    chain_products.append({
+                        'index': idx,
+                        'is_chain': True,
+                        'circularity': circularity,
+                        'is_closed_loop': is_closed_loop,
+                        'chain_score': chain_score,
+                        'endpoint_count': endpoint_count
+                    })
+
+                    print(f"   🔗 产品{idx+1}: 检测到开放链条 (得分: {chain_score}/15, 端点数: {endpoint_count}, 圆度: {circularity:.2f})")
+                    print(f"      骨架比: {skeleton_ratio:.2f}, 稀疏度: {area_ratio:.2f}, "
+                          f"细长度: {thinness:.2f}, 边缘: {edge_touch_ratio:.2f}")
+                elif chain_score >= 5 or endpoint_count > 7:
+                    # 显示调试信息（接近阈值或多分支物体）
+                    print(f"   ℹ️ 产品{idx+1}: 链条评分: {chain_score}/15 (端点数: {endpoint_count}, "
+                          f"闭合环: {'是' if is_closed_loop else '否'}) → 不判定为链条")
+
+            # 如果检测到链条，选择圆度最低的作为主图
+            if len(chain_products) > 0:
+                print(f"\n   📐 检测到 {len(chain_products)} 个链条产品")
+
+                if len(chain_products) == 1:
+                    # 只有1个链条，直接使用adaptive_focus
+                    print(f"   ➡️  使用 adaptive_focus 布局")
                     return "adaptive_focus"
-            return "grid"
+                else:
+                    # 有多个链条，按圆度排序，选择圆度最低的作为主图
+                    chain_products.sort(key=lambda x: x['circularity'])
+
+                    main_chain = chain_products[0]
+                    self.forced_main_product_index = main_chain['index']
+                    print(f"   🎯 选择产品{main_chain['index']+1}作为主图 (圆度最低: {main_chain['circularity']:.2f})")
+
+                    for i, chain in enumerate(chain_products):
+                        mark = "👑主图" if i == 0 else "副图"
+                        print(f"      {mark} 产品{chain['index']+1}: 圆度={chain['circularity']:.3f}")
+
+                    return "adaptive_focus"
+            else:
+                # 没有检测到链条，使用横排布局
+                print(f"   ➡️  未检测到链条，使用 horizontal 布局")
+                return "horizontal"
+
+        # 默认：3个产品且无法判断时，使用横排
+        return "horizontal"
 
     def preprocess_label(self, text: str) -> str:
         """预处理标签文本：统一全角字符"""
@@ -813,119 +1140,165 @@ class SmartProductCollageBatch:
         if len(products) < 2:
             return self.create_single_layout(products[0], canvas_w, canvas_h, padding, scale_factor)
 
-        # 🔧 智能判断主产品 - 增强版
-        product_features = []
-        for i, p in enumerate(products):
-            h, w = p.shape[:2]
-            area = h * w
-            aspect_ratio = w / h  # 宽高比
+        # 🆕 如果有强制指定的主产品索引，直接使用
+        if self.forced_main_product_index is not None and 0 <= self.forced_main_product_index < len(products):
+            max_idx = self.forced_main_product_index
+            print(f"   🎯 使用强制指定的主产品: 产品{max_idx+1}")
 
-            # 🔧 增强链条检测
-            is_necklace = False
-            necklace_score = 0
+            # 使用完后重置
+            self.forced_main_product_index = None
 
-            # 特征1: 极端宽高比（更宽松的阈值）
-            if aspect_ratio > 1.3 or aspect_ratio < 0.77:  # 从1.5/0.67改为1.3/0.77
-                necklace_score += 30
+            main_product = products[max_idx]
+            other_products = [p for i, p in enumerate(products) if i != max_idx]
 
-            # 特征2: 边缘延伸检测（降低检测阈值）
-            gray = cv2.cvtColor(p, cv2.COLOR_BGR2GRAY)
-            edges = cv2.Canny(gray, 30, 100)  # 从50/150降低到30/100，更敏感
+            # 强制放置在上方
+            adaptive_direction = "top"
 
-            h_margin = max(1, int(h * 0.05))  # 检测边缘的范围
-            w_margin = max(1, int(w * 0.05))
+        else:
+            # 🔧 智能判断主产品 - 增强版
+            product_features = []
+            for i, p in enumerate(products):
+                h, w = p.shape[:2]
+                area = h * w
+                aspect_ratio = w / h  # 宽高比
 
-            # 检测四个边缘区域的边缘密度
-            top_density = np.sum(edges[0:h_margin, :]) / (h_margin * w)
-            bottom_density = np.sum(edges[-h_margin:, :]) / (h_margin * w)
-            left_density = np.sum(edges[:, 0:w_margin]) / (h * w_margin)
-            right_density = np.sum(edges[:, -w_margin:]) / (h * w_margin)
+                # 🔧 增强链条检测
+                is_necklace = False
+                necklace_score = 0
 
-            # 边缘密度阈值（降低阈值更容易检测）
-            density_threshold = 0.05  # 从0.1降低到0.05
+                # 特征1: 极端宽高比（更宽松的阈值）
+                if aspect_ratio > 1.3 or aspect_ratio < 0.77:  # 从1.5/0.67改为1.3/0.77
+                    necklace_score += 30
 
-            edge_touches = 0
-            if top_density > density_threshold:
-                edge_touches += 1
-                necklace_score += 25
-            if bottom_density > density_threshold:
-                edge_touches += 1
-                necklace_score += 25
-            if left_density > density_threshold:
-                edge_touches += 1
-                necklace_score += 25
-            if right_density > density_threshold:
-                edge_touches += 1
-                necklace_score += 25
+                # 特征2: 边缘延伸检测（增强开放式链条检测）
+                gray = cv2.cvtColor(p, cv2.COLOR_BGR2GRAY)
+                edges = cv2.Canny(gray, 30, 100)
 
-            # 如果至少有2个边缘有延伸，判定为链条
-            if edge_touches >= 2:
-                is_necklace = True
-                necklace_score += 50
+                h_margin = max(1, int(h * 0.05))
+                w_margin = max(1, int(w * 0.05))
 
-            # 特征3: 细长度（周长/面积比）
-            contours, _ = cv2.findContours(
-                cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)[1],
-                cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-            )
-            if contours:
-                largest_contour = max(contours, key=cv2.contourArea)
-                perimeter = cv2.arcLength(largest_contour, True)
-                if area > 0:
-                    slenderness = perimeter * perimeter / area
-                    if slenderness > 50:  # 细长度高
-                        necklace_score += 30
-                        is_necklace = True
+                # 检测四个边缘区域的边缘密度
+                top_density = np.sum(edges[0:h_margin, :]) / (h_margin * w)
+                bottom_density = np.sum(edges[-h_margin:, :]) / (h_margin * w)
+                left_density = np.sum(edges[:, 0:w_margin]) / (h * w_margin)
+                right_density = np.sum(edges[:, -w_margin:]) / (h * w_margin)
 
-            product_features.append({
-                'index': i,
-                'area': area,
-                'aspect_ratio': aspect_ratio,
-                'is_necklace': is_necklace,
-                'necklace_score': necklace_score,
-                'edge_touches': edge_touches,
-                'score': 0
-            })
+                # 🔧 增强开放式检测：检测产品主体是否接触边缘（非白色像素）
+                # 开放式链条的特征是产品本身延伸到边缘
+                mask = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)[1]
+                top_product_pixels = np.sum(mask[0:h_margin, :]) / (h_margin * w * 255)
+                bottom_product_pixels = np.sum(mask[-h_margin:, :]) / (h_margin * w * 255)
+                left_product_pixels = np.sum(mask[:, 0:w_margin]) / (h * w_margin * 255)
+                right_product_pixels = np.sum(mask[:, -w_margin:]) / (h * w_margin * 255)
 
-        # 计算综合得分
-        max_area = max([f['area'] for f in product_features])
-        for feature in product_features:
-            score = 0
+                # 边缘密度阈值
+                density_threshold = 0.05
+                product_threshold = 0.02  # 产品像素阈值（开放式链条特征）
 
-            # 面积得分（权重降低）
-            score += (feature['area'] / max_area) * 30
+                edge_touches = 0
+                open_edges = 0  # 开放边缘计数
 
-            # 链条得分（权重提高）
-            score += feature['necklace_score']
+                if top_density > density_threshold:
+                    edge_touches += 1
+                    necklace_score += 25
+                    if top_product_pixels > product_threshold:
+                        open_edges += 1
+                        necklace_score += 35  # 开放边缘加分更高
+                if bottom_density > density_threshold:
+                    edge_touches += 1
+                    necklace_score += 25
+                    if bottom_product_pixels > product_threshold:
+                        open_edges += 1
+                        necklace_score += 35
+                if left_density > density_threshold:
+                    edge_touches += 1
+                    necklace_score += 25
+                    if left_product_pixels > product_threshold:
+                        open_edges += 1
+                        necklace_score += 35
+                if right_density > density_threshold:
+                    edge_touches += 1
+                    necklace_score += 25
+                    if right_product_pixels > product_threshold:
+                        open_edges += 1
+                        necklace_score += 35
 
-            feature['score'] = score
+                # 🔧 增强判定：开放边缘（产品延伸到边界）是链条的强特征
+                if open_edges >= 2:  # 至少2个边缘有产品延伸
+                    is_necklace = True
+                    necklace_score += 80
+                elif edge_touches >= 2:  # 或至少2个边缘有边缘密度
+                    is_necklace = True
+                    necklace_score += 50
 
-        # 选择得分最高的作为主产品
-        product_features.sort(key=lambda x: x['score'], reverse=True)
-        max_idx = product_features[0]['index']
+                # 特征3: 细长度（周长/面积比）
+                contours, _ = cv2.findContours(
+                    cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)[1],
+                    cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                )
+                if contours:
+                    largest_contour = max(contours, key=cv2.contourArea)
+                    perimeter = cv2.arcLength(largest_contour, True)
+                    if area > 0:
+                        slenderness = perimeter * perimeter / area
+                        if slenderness > 50:  # 细长度高
+                            necklace_score += 30
+                            is_necklace = True
 
-        # 调试信息
-        print(f"   🔍 主产品识别:")
-        for i, f in enumerate(product_features):
-            mark = "👑主" if i == 0 else "  "
-            print(f"      {mark} 产品{f['index']+1}: 得分{f['score']:.1f} "
-                  f"(链条:{f['is_necklace']}, 边缘:{f['edge_touches']}, "
-                  f"宽高比:{f['aspect_ratio']:.2f})")
+                product_features.append({
+                    'index': i,
+                    'area': area,
+                    'aspect_ratio': aspect_ratio,
+                    'is_necklace': is_necklace,
+                    'necklace_score': necklace_score,
+                    'edge_touches': edge_touches,
+                    'score': 0
+                })
 
-        main_product = products[max_idx]
-        other_products = [p for i, p in enumerate(products) if i != max_idx]
+            # 计算综合得分
+            max_area = max([f['area'] for f in product_features])
+            for feature in product_features:
+                score = 0
 
-        # 🔧 修复：链条类产品优先放上方
-        if adaptive_direction == "auto":
-            if product_features[0]['is_necklace']:
+                # 面积得分（权重降低）
+                score += (feature['area'] / max_area) * 30
+
+                # 链条得分（权重提高）
+                score += feature['necklace_score']
+
+                feature['score'] = score
+
+            # 选择得分最高的作为主产品
+            product_features.sort(key=lambda x: x['score'], reverse=True)
+            max_idx = product_features[0]['index']
+
+            # 调试信息
+            print(f"   🔍 主产品识别:")
+            for i, f in enumerate(product_features):
+                mark = "👑主" if i == 0 else "  "
+                print(f"      {mark} 产品{f['index']+1}: 得分{f['score']:.1f} "
+                      f"(链条:{f['is_necklace']}, 边缘:{f['edge_touches']}, "
+                      f"宽高比:{f['aspect_ratio']:.2f})")
+
+            main_product = products[max_idx]
+            other_products = [p for i, p in enumerate(products) if i != max_idx]
+
+            # 🔧 强制规则：链条/开放弧形类产品必须放上方
+            if adaptive_direction == "auto":
+                if product_features[0]['is_necklace']:
+                    adaptive_direction = "top"
+                    print(f"   📍 检测到链条/开放弧形产品，强制放置上方")
+                elif canvas_w > canvas_h * 1.2:
+                    adaptive_direction = "left" if len(other_products) <= 2 else "top"
+                elif canvas_h > canvas_w * 1.2:
+                    adaptive_direction = "top" if len(other_products) <= 2 else "left"
+                else:
+                    adaptive_direction = "left" if len(other_products) <= 3 else "top"
+
+            # 🔧 即使用户指定了方向，如果检测到链条也强制改为top
+            if product_features[0]['is_necklace'] and adaptive_direction != "top":
+                print(f"   ⚠️  检测到链条产品，覆盖用户设置，强制放置上方")
                 adaptive_direction = "top"
-                print(f"   📍 检测到链条类产品，自动放置上方")
-            elif canvas_w > canvas_h * 1.2:
-                adaptive_direction = "left" if len(other_products) <= 2 else "top"
-            elif canvas_h > canvas_w * 1.2:
-                adaptive_direction = "top" if len(other_products) <= 2 else "left"
-            else:
-                adaptive_direction = "left" if len(other_products) <= 3 else "top"
 
         # 根据方向选择布局函数
         if adaptive_direction == "left":
@@ -1196,6 +1569,9 @@ class SmartProductCollageBatch:
             if len(products) == 0:
                 print(f"   ⚠️  本组没有有效产品，跳过")
                 continue
+
+            # 重置强制主产品索引（每组独立判断）
+            self.forced_main_product_index = None
 
             # 决定布局（传入products用于智能判断）
             final_layout = self.decide_layout(len(products), layout, products)
