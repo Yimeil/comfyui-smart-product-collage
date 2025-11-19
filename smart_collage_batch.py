@@ -197,15 +197,16 @@ class SmartProductCollageBatch:
         edges_dilated = cv2.dilate(edges, np.ones((5, 5), np.uint8), iterations=2)
 
         # 方法2: 基于阈值（检测非白色区域）
-        # 使用较低的阈值以保留阴影
-        _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
+        # 使用较低的阈值以保留阴影和浅色边缘
+        _, thresh = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
 
         # 方法3: 基于颜色差异（检测与白色背景的差异）
         # 计算每个像素与白色的差异
         white_bg = np.full_like(image, 255)
         color_diff = cv2.absdiff(image, white_bg)
         color_diff_gray = cv2.cvtColor(color_diff, cv2.COLOR_BGR2GRAY)
-        _, color_mask = cv2.threshold(color_diff_gray, 10, 255, cv2.THRESH_BINARY)
+        # 降低阈值以保留与白色背景差异较小的浅色边缘
+        _, color_mask = cv2.threshold(color_diff_gray, 5, 255, cv2.THRESH_BINARY)
 
         # 3. 合并多种方法的结果
         combined_mask = cv2.bitwise_or(thresh, color_mask)
@@ -254,10 +255,20 @@ class SmartProductCollageBatch:
         # 创建mask区域的布尔索引
         mask_region = all_contours_mask > 0
 
-        # 阴影保留：240以下的都保留，240-255之间渐变
+        # 阴影保留：245以下的都保留，245-255之间渐变
         # 使用向量化操作替代双重循环，速度提升100倍+
-        fine_mask[mask_region & (gray < 240)] = 1.0
-        fine_mask[mask_region & (gray >= 240)] = (255 - gray[mask_region & (gray >= 240)]) / 15.0
+        fine_mask[mask_region & (gray < 245)] = 1.0
+        # 修复白色边缘缺失：确保即使是纯白色(255)也有最小保留值
+        # 公式：从1.0渐变到0.5，而不是渐变到0
+        high_gray_region = mask_region & (gray >= 245)
+        fine_mask[high_gray_region] = 1.0 - (gray[high_gray_region] - 245) / 20.0
+        # 确保最小值为0.5，防止白色边缘完全消失
+        fine_mask[high_gray_region] = np.maximum(fine_mask[high_gray_region], 0.5)
+
+        # 边缘增强：确保检测到的边缘区域有足够的保留
+        # 这样可以保护产品的轮廓，即使是白色边缘
+        edge_region = edges_dilated > 0
+        fine_mask[edge_region & mask_region] = np.maximum(fine_mask[edge_region & mask_region], 0.8)
 
         # 7. 高斯模糊使边缘更自然
         fine_mask = cv2.GaussianBlur(fine_mask, (5, 5), 0)
