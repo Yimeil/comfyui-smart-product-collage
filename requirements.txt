@@ -1,0 +1,14 @@
+# ComfyUI 智能产品拼接节点 - 依赖项
+
+# 基础依赖 (通常 ComfyUI 已包含)
+torch
+numpy
+opencv-python
+pillow
+
+# 可选依赖 - RAR 文件支持
+# 注意: 还需要安装系统工具 unrar
+# Ubuntu/Debian: sudo apt-get install unrar
+# macOS: brew install unrar
+# Windows: 从 https://www.rarlab.com/rar_add.htm 下载安装
+rarfile
