@@ -174,15 +174,15 @@ class CompressedFileLoader:
             # 转换为 numpy array
             img_array = np.array(img).astype(np.float32) / 255.0
 
-            # 转换为 torch tensor [H, W, C]
-            img_tensor = torch.from_numpy(img_array)
+            # 转换为 torch tensor [H, W, C]，然后添加 batch 维度 [1, H, W, C]
+            img_tensor = torch.from_numpy(img_array).unsqueeze(0)
 
             return img_tensor
 
         except Exception as e:
             print(f"⚠️ 加载图片失败 ({image_path}): {e}")
-            # 返回一个 1x1 的黑色图片作为占位符
-            return torch.zeros((1, 1, 3), dtype=torch.float32)
+            # 返回一个 1x1 的黑色图片作为占位符，包含 batch 维度
+            return torch.zeros((1, 1, 1, 3), dtype=torch.float32)
 
     def load_archive(self, archive_file: str, file_filter: str = "all",
                     max_files: int = 100, extract_path_filter: str = ""):
@@ -245,8 +245,8 @@ class CompressedFileLoader:
 
         if len(filtered_files) == 0:
             print("❌ 没有找到符合条件的文件")
-            # 返回空列表
-            empty_img = torch.zeros((1, 1, 3), dtype=torch.float32)
+            # 返回空列表（包含 batch 维度）
+            empty_img = torch.zeros((1, 1, 1, 3), dtype=torch.float32)
             return ([empty_img], ["无文件"], [""], 0)
 
         # 处理文件
@@ -265,10 +265,10 @@ class CompressedFileLoader:
             if self.is_image_file(full_path):
                 img_tensor = self.load_image_from_path(full_path)
                 images.append(img_tensor)
-                print(f"   [{idx+1}/{len(filtered_files)}] 📷 {filename} ({img_tensor.shape[1]}x{img_tensor.shape[0]})")
+                print(f"   [{idx+1}/{len(filtered_files)}] 📷 {filename} ({img_tensor.shape[2]}x{img_tensor.shape[1]})")
             else:
-                # 非图片文件,创建占位符
-                placeholder = torch.zeros((100, 100, 3), dtype=torch.float32)
+                # 非图片文件,创建占位符（包含 batch 维度）
+                placeholder = torch.zeros((1, 100, 100, 3), dtype=torch.float32)
                 images.append(placeholder)
                 print(f"   [{idx+1}/{len(filtered_files)}] 📄 {filename}")
 
