@@ -2,11 +2,11 @@
 ComfyUI 压缩文件加载器节点
 
 功能:
-- 支持上传并加载 zip、rar 等压缩文件
+- 支持本地上传 zip、rar 等压缩文件
 - 自动解压文件
 - 批量输出文件内容和文件名列表
 
-版本: 1.0
+版本: 2.0
 日期: 2025-01-24
 """
 
@@ -20,6 +20,7 @@ import numpy as np
 from PIL import Image
 import io
 import folder_paths
+import hashlib
 
 # 尝试导入 rarfile (可选)
 try:
@@ -33,7 +34,7 @@ except ImportError:
 
 
 class CompressedFileLoader:
-    """压缩文件加载器节点"""
+    """压缩文件加载器节点 - 支持本地文件上传"""
 
     def __init__(self):
         self.temp_dir = None
@@ -52,13 +53,9 @@ class CompressedFileLoader:
                 if f.lower().endswith(('.zip', '.rar', '.7z')):
                     files.append(f)
 
-        # 如果没有文件,添加一个提示选项
-        if not files:
-            files = ["请将压缩文件放入 input 目录"]
-
         return {
             "required": {
-                "archive_file": (sorted(files), {"default": files[0] if files else ""}),
+                "archive_file": (sorted(files), {"image_upload": True}),
                 "file_filter": (["all", "images_only", "non_images"], {"default": "all"}),
                 "max_files": ("INT", {"default": 100, "min": 1, "max": 1000, "step": 1}),
             },
@@ -66,6 +63,18 @@ class CompressedFileLoader:
                 "extract_path_filter": ("STRING", {"default": "", "multiline": False}),
             }
         }
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, archive_file):
+        """验证输入文件"""
+        if not archive_file:
+            return "请选择或上传一个压缩文件"
+
+        # 验证文件格式
+        if not archive_file.lower().endswith(('.zip', '.rar', '.7z')):
+            return "不支持的文件格式，仅支持 .zip、.rar、.7z 文件"
+
+        return True
 
     RETURN_TYPES = ("IMAGE", "STRING", "STRING", "INT")
     RETURN_NAMES = ("图片列表", "文件名列表", "文件路径列表", "文件数量")
@@ -191,15 +200,21 @@ class CompressedFileLoader:
         """
 
         print("\n" + "=" * 70)
-        print("📦 压缩文件加载器节点 v1.0")
+        print("📦 压缩文件加载器节点 v2.0 (支持本地上传)")
         print("=" * 70)
 
         # 获取压缩文件完整路径
         input_dir = folder_paths.get_input_directory()
+
+        # 处理文件名（可能包含子目录）
+        if isinstance(archive_file, str):
+            # 移除可能的前缀路径
+            archive_file = os.path.basename(archive_file)
+
         archive_path = os.path.join(input_dir, archive_file)
 
         if not os.path.exists(archive_path):
-            raise FileNotFoundError(f"找不到压缩文件: {archive_path}")
+            raise FileNotFoundError(f"找不到压缩文件: {archive_path}\n提示: 请先上传压缩文件或将文件放入 input 目录")
 
         print(f"   压缩文件: {archive_file}")
         print(f"   文件大小: {os.path.getsize(archive_path) / 1024 / 1024:.2f} MB")
