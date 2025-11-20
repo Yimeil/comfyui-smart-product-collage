@@ -40,27 +40,31 @@ app.registerExtension({
                                     uploadWidget.name = "上传中... ⏳";
                                     app.canvas.setDirty(true);
 
-                                    // 上传文件到服务器
+                                    // 直接将文件复制到 input 目录
                                     const formData = new FormData();
-                                    formData.append("image", file);
+                                    formData.append("file", file);
                                     formData.append("subfolder", "");
                                     formData.append("type", "input");
                                     formData.append("overwrite", "true");
 
-                                    const resp = await api.fetchApi("/upload/image", {
+                                    // 使用通用文件上传端点
+                                    const resp = await fetch("/upload/file", {
                                         method: "POST",
                                         body: formData,
                                     });
 
-                                    if (resp.status === 200) {
+                                    if (resp.ok) {
                                         const data = await resp.json();
 
+                                        // 文件名可能在 data.name 或 data.filename 中
+                                        const fileName = data.name || data.filename || file.name;
+
                                         // 更新下拉菜单的值
-                                        archiveWidget.value = data.name;
+                                        archiveWidget.value = fileName;
 
                                         // 刷新下拉菜单选项 - 添加新上传的文件
-                                        if (!archiveWidget.options.values.includes(data.name)) {
-                                            archiveWidget.options.values.push(data.name);
+                                        if (!archiveWidget.options.values.includes(fileName)) {
+                                            archiveWidget.options.values.push(fileName);
                                             archiveWidget.options.values.sort();
                                         }
 
@@ -72,9 +76,10 @@ app.registerExtension({
                                             app.canvas.setDirty(true);
                                         }, 2000);
 
-                                        console.log("✅ 文件上传成功:", data.name);
+                                        console.log("✅ 文件上传成功:", fileName);
                                     } else {
-                                        throw new Error("上传失败");
+                                        const errorText = await resp.text();
+                                        throw new Error(`上传失败 (${resp.status}): ${errorText}`);
                                     }
                                 } catch (error) {
                                     console.error("❌ 文件上传失败:", error);
