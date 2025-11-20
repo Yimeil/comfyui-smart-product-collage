@@ -4,9 +4,8 @@
  */
 
 import { app } from "../../scripts/app.js";
-import { api } from "../../scripts/api.js";
 
-// 在节点加载时添加文件上传功能
+// 配置压缩文件上传
 app.registerExtension({
     name: "Comfy.CompressedFileLoader",
 
@@ -20,7 +19,7 @@ app.registerExtension({
                 const r = onNodeCreated ? onNodeCreated.apply(this, arguments) : undefined;
 
                 // 查找 archive_file widget
-                const archiveWidget = this.widgets.find(w => w.name === "archive_file");
+                const archiveWidget = this.widgets?.find(w => w.name === "archive_file");
 
                 if (archiveWidget) {
                     // 创建上传按钮
@@ -40,41 +39,47 @@ app.registerExtension({
                                     uploadWidget.name = "上传中... ⏳";
                                     app.canvas.setDirty(true);
 
-                                    // 上传文件到服务器
+                                    // 创建 FormData
                                     const formData = new FormData();
-                                    formData.append("image", file);
-                                    formData.append("subfolder", "");
-                                    formData.append("type", "input");
-                                    formData.append("overwrite", "true");
+                                    formData.append("file", file);
 
-                                    const resp = await api.fetchApi("/upload/image", {
+                                    // 上传到自定义 API 端点
+                                    const resp = await fetch("/upload/archive", {
                                         method: "POST",
                                         body: formData,
                                     });
 
-                                    if (resp.status === 200) {
+                                    if (resp.ok) {
                                         const data = await resp.json();
 
-                                        // 更新下拉菜单的值
-                                        archiveWidget.value = data.name;
+                                        if (data.success) {
+                                            const fileName = data.filename;
 
-                                        // 刷新下拉菜单选项 - 添加新上传的文件
-                                        if (!archiveWidget.options.values.includes(data.name)) {
-                                            archiveWidget.options.values.push(data.name);
-                                            archiveWidget.options.values.sort();
+                                            // 更新下拉菜单的值
+                                            archiveWidget.value = fileName;
+
+                                            // 刷新下拉菜单选项
+                                            const listResp = await fetch("/api/archives/list");
+                                            if (listResp.ok) {
+                                                const listData = await listResp.json();
+                                                archiveWidget.options.values = listData.files;
+                                            }
+
+                                            uploadWidget.name = "上传成功! ✅";
+
+                                            // 2秒后恢复按钮文本
+                                            setTimeout(() => {
+                                                uploadWidget.name = "上传压缩文件 📤";
+                                                app.canvas.setDirty(true);
+                                            }, 2000);
+
+                                            console.log("✅ 文件上传成功:", fileName, `(${(data.size / 1024 / 1024).toFixed(2)} MB)`);
+                                        } else {
+                                            throw new Error(data.error || "上传失败");
                                         }
-
-                                        uploadWidget.name = "上传成功! ✅";
-
-                                        // 2秒后恢复按钮文本
-                                        setTimeout(() => {
-                                            uploadWidget.name = "上传压缩文件 📤";
-                                            app.canvas.setDirty(true);
-                                        }, 2000);
-
-                                        console.log("✅ 文件上传成功:", data.name);
                                     } else {
-                                        throw new Error("上传失败");
+                                        const errorData = await resp.json();
+                                        throw new Error(errorData.error || `上传失败 (${resp.status})`);
                                     }
                                 } catch (error) {
                                     console.error("❌ 文件上传失败:", error);

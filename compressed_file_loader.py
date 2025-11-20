@@ -55,7 +55,7 @@ class CompressedFileLoader:
 
         return {
             "required": {
-                "archive_file": (sorted(files), {"image_upload": True}),
+                "archive_file": (sorted(files) if files else ["请先将压缩文件放入 input 目录"],),
                 "file_filter": (["all", "images_only", "non_images"], {"default": "all"}),
                 "max_files": ("INT", {"default": 100, "min": 1, "max": 1000, "step": 1}),
             },
@@ -287,6 +287,75 @@ class CompressedFileLoader:
         self.cleanup_temp_dir()
 
 
+# ==================== API 路由处理 ====================
+
+from aiohttp import web
+
+async def upload_archive_handler(request):
+    """处理压缩文件上传"""
+    try:
+        reader = await request.multipart()
+        field = await reader.next()
+
+        if field is None:
+            return web.json_response({"error": "No file uploaded"}, status=400)
+
+        filename = field.filename
+        if not filename:
+            return web.json_response({"error": "No filename provided"}, status=400)
+
+        # 验证文件类型
+        if not filename.lower().endswith(('.zip', '.rar', '.7z')):
+            return web.json_response({
+                "error": f"Invalid file type. Only .zip, .rar, .7z are supported. Got: {filename}"
+            }, status=400)
+
+        # 获取 input 目录并保存文件
+        input_dir = folder_paths.get_input_directory()
+        save_path = os.path.join(input_dir, filename)
+
+        size = 0
+        with open(save_path, 'wb') as f:
+            while True:
+                chunk = await field.read_chunk()
+                if not chunk:
+                    break
+                size += len(chunk)
+                f.write(chunk)
+
+        print(f"✅ 文件上传成功: {filename} ({size / 1024 / 1024:.2f} MB)")
+
+        return web.json_response({
+            "success": True,
+            "filename": filename,
+            "size": size,
+            "path": save_path
+        })
+
+    except Exception as e:
+        print(f"❌ 文件上传失败: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def list_archives_handler(request):
+    """列出所有可用的压缩文件"""
+    try:
+        input_dir = folder_paths.get_input_directory()
+        files = []
+
+        if os.path.exists(input_dir):
+            for f in os.listdir(input_dir):
+                if f.lower().endswith(('.zip', '.rar', '.7z')):
+                    files.append(f)
+
+        return web.json_response({"files": sorted(files)})
+
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
 # 注册节点
 NODE_CLASS_MAPPINGS = {
     "CompressedFileLoader": CompressedFileLoader,
@@ -295,3 +364,9 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "CompressedFileLoader": "压缩文件加载器 📦",
 }
+
+# 导出 API 路由
+WEB_ROUTES = [
+    ("POST", "/upload/archive", upload_archive_handler),
+    ("GET", "/api/archives/list", list_archives_handler),
+]
