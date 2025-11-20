@@ -28,7 +28,8 @@
    - ✅ 简单易用
 
 3. **压缩文件加载器 📦** (CompressedFileLoader) - 🆕 新增
-   - ✅ 支持 ZIP、RAR 等压缩文件
+   - ✅ **支持浏览器直接上传** - 无需访问服务器文件系统
+   - ✅ 支持 ZIP、RAR、7Z 等压缩文件
    - ✅ 自动解压并批量加载
    - ✅ 输出图片列表和文件名
    - ✅ 灵活的文件过滤选项
@@ -38,11 +39,13 @@
 
 ### 方法一：直接复制文件（推荐）
 
-1. **下载文件**（共4个）：
+1. **下载文件**（共6个）：
    - `__init__.py`
    - `smart_collage_enterprise.py`
    - `smart_collage_batch.py`
    - `compressed_file_loader.py` (新增)
+   - `upload_handler.py` (新增 - API 端点)
+   - `web/compressed_file_loader.js` (新增 - 前端上传)
 
 2. **创建插件文件夹**：
    ```
@@ -57,7 +60,10 @@
            ├── __init__.py
            ├── smart_collage_enterprise.py
            ├── smart_collage_batch.py
-           └── compressed_file_loader.py
+           ├── compressed_file_loader.py
+           ├── upload_handler.py
+           └── web/
+               └── compressed_file_loader.js
    ```
 
 4. **重启ComfyUI**（完全关闭后重新启动）
@@ -86,16 +92,25 @@ git clone <repository-url> smart_product_collage
 
 #### 使用步骤
 
+**方式一：浏览器直接上传（推荐）** ⭐
+
+1. **点击上传按钮**
+   - 在节点中找到"上传压缩文件 📤"按钮
+   - 点击按钮选择本地的压缩文件（.zip、.rar、.7z）
+   - 等待上传完成（按钮显示"上传成功! ✅"）
+   - 文件会自动上传到服务器并在下拉菜单中选中
+
+2. **配置参数**（可选）
+   - 设置文件过滤、最大文件数等选项
+
+**方式二：手动放置文件**
+
 1. **准备压缩文件**
-   - 将压缩文件（.zip、.rar 或 .7z）放入 ComfyUI 的 `input` 目录
+   - 将压缩文件放入 ComfyUI 的 `input` 目录
    - 例如：`ComfyUI/input/my_products.zip`
 
 2. **在节点中选择文件**
-   - 在 `archive_file` 下拉菜单中选择你的压缩文件
-   - 节点会自动列出 input 目录下的所有压缩文件
-   - 如果没有文件，下拉菜单会提示"请先将压缩文件放入 input 目录"
-
-3. **配置参数**（可选）
+   - 从 `archive_file` 下拉菜单选择你的压缩文件
 
 #### 参数说明
 
@@ -408,12 +423,18 @@ label_margin: 40      # 标签与产品间距
 
 ## 📝 更新日志
 
-### v1.1 (2025-01-24)
+### v2.0 (2025-01-24) - 压缩文件加载器
 - ✨ 新增：压缩文件加载器节点
-- ✨ 支持 ZIP、RAR 等压缩文件格式
+- ✨ **支持浏览器直接上传** - 无需访问服务器文件系统
+- ✨ 自定义 API 端点处理文件上传
+- ✨ 支持 ZIP、RAR、7Z 等压缩文件格式
 - ✨ 批量加载和输出文件列表
 - ✨ 灵活的文件过滤选项
 - 📦 添加 requirements.txt 依赖文件
+
+### v1.1 (2025-01-24)
+- ✨ 添加智能产品拼接基础功能
+- 📦 项目初始化
 
 ### v2.0 (2025-01-28)
 - ✨ 重大更新：内部智能抠图（无需外部mask）
