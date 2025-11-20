@@ -33,18 +33,24 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 # 导出（ComfyUI需要）
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']
 
-# 注册 Web API 路由
+# 注册 Web 目录
 WEB_DIRECTORY = "./web"
 
-# 尝试注册自定义 API 路由
+# 注册自定义 API 路由
 try:
-    from .upload_handler import setup_routes
     import server
+    from .compressed_file_loader import WEB_ROUTES
 
-    # 获取 PromptServer 实例并注册路由
     prompt_server = server.PromptServer.instance
     if prompt_server is not None:
-        setup_routes(prompt_server.routes)
+        for method, path, handler in WEB_ROUTES:
+            if method == "POST":
+                prompt_server.routes.post(path)(handler)
+            elif method == "GET":
+                prompt_server.routes.get(path)(handler)
+        print("✅ 压缩文件上传 API 已注册")
+        print("   - POST /upload/archive")
+        print("   - GET /api/archives/list")
 except Exception as e:
     print(f"⚠️ 无法注册上传 API: {e}")
     print("   文件上传功能可能不可用，请手动将文件放入 input 目录")

@@ -39,13 +39,12 @@
 
 ### 方法一：直接复制文件（推荐）
 
-1. **下载文件**（共6个）：
+1. **下载文件**（共5个）：
    - `__init__.py`
    - `smart_collage_enterprise.py`
    - `smart_collage_batch.py`
-   - `compressed_file_loader.py` (新增)
-   - `upload_handler.py` (新增 - API 端点)
-   - `web/compressed_file_loader.js` (新增 - 前端上传)
+   - `compressed_file_loader.py` (新增 - 包含上传 API)
+   - `web/compressed_file_loader.js` (新增 - 前端界面)
 
 2. **创建插件文件夹**：
    ```
@@ -61,7 +60,6 @@
            ├── smart_collage_enterprise.py
            ├── smart_collage_batch.py
            ├── compressed_file_loader.py
-           ├── upload_handler.py
            └── web/
                └── compressed_file_loader.js
    ```
