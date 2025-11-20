@@ -55,7 +55,7 @@ class CompressedFileLoader:
 
         return {
             "required": {
-                "archive_file": (sorted(files), {"image_upload": True}),
+                "archive_file": (sorted(files) if files else ["请先将压缩文件放入 input 目录"],),
                 "file_filter": (["all", "images_only", "non_images"], {"default": "all"}),
                 "max_files": ("INT", {"default": 100, "min": 1, "max": 1000, "step": 1}),
             },
