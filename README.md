@@ -27,14 +27,21 @@
    - ✅ 单次拼接（1-9张图）
    - ✅ 简单易用
 
+3. **压缩文件加载器 📦** (CompressedFileLoader) - 🆕 新增
+   - ✅ 支持 ZIP、RAR 等压缩文件
+   - ✅ 自动解压并批量加载
+   - ✅ 输出图片列表和文件名
+   - ✅ 灵活的文件过滤选项
+
 ## 🚀 安装步骤
 
 ### 方法一：直接复制文件（推荐）
 
-1. **下载文件**（共3个）：
+1. **下载文件**（共4个）：
    - `__init__.py`
    - `smart_collage_enterprise.py`
    - `smart_collage_batch.py`
+   - `compressed_file_loader.py` (新增)
 
 2. **创建插件文件夹**：
    ```
@@ -48,13 +55,15 @@
        └── smart_product_collage/
            ├── __init__.py
            ├── smart_collage_enterprise.py
-           └── smart_collage_batch.py
+           ├── smart_collage_batch.py
+           └── compressed_file_loader.py
    ```
 
 4. **重启ComfyUI**（完全关闭后重新启动）
 
 5. **验证安装**：
    在节点搜索框输入 "智能产品拼接"，应该看到2个节点
+   在节点搜索框输入 "压缩文件"，应该看到压缩文件加载器节点
 
 ### 方法二：Git克隆
 
@@ -66,7 +75,111 @@ git clone <repository-url> smart_product_collage
 
 ## 📖 使用说明
 
-### 节点：智能产品拼接·内部抠图v2.0 (推荐)
+### 节点1：压缩文件加载器 📦 (新增)
+
+**适用场景：** 批量加载压缩包中的图片文件
+
+#### 功能说明
+
+压缩文件加载器节点可以自动解压 ZIP、RAR 等压缩文件，并批量输出其中的图片和文件信息。
+
+#### 使用步骤
+
+1. **准备压缩文件**
+   - 将压缩文件（.zip 或 .rar）放入 ComfyUI 的 `input` 目录
+   - 例如：`ComfyUI/input/my_products.zip`
+
+2. **在节点中选择文件**
+   - 在 `archive_file` 下拉菜单中选择你的压缩文件
+   - 节点会自动列出 input 目录下的所有压缩文件
+
+3. **配置参数**（可选）
+
+#### 参数说明
+
+| 参数 | 说明 | 选项/范围 | 默认值 |
+|-----|------|----------|-------|
+| `archive_file` | 压缩文件名 | input目录下的压缩文件列表 | - |
+| `file_filter` | 文件过滤器 | all / images_only / non_images | all |
+| `max_files` | 最大文件数 | 1-1000 | 100 |
+| `extract_path_filter` | 路径过滤（可选） | 字符串 | "" |
+
+**文件过滤器说明：**
+- `all` - 输出所有文件（图片和非图片）
+- `images_only` - 只输出图片文件（.png, .jpg, .jpeg, .bmp, .gif, .webp, .tiff）
+- `non_images` - 只输出非图片文件
+
+**路径过滤说明：**
+- 可以输入路径关键词，只加载包含该关键词的文件
+- 例如：输入 "product" 只加载路径中包含 "product" 的文件
+- 留空则加载所有文件
+
+#### 输出说明
+
+节点提供 4 个输出端口：
+
+| 输出 | 类型 | 说明 |
+|-----|------|------|
+| `图片列表` | IMAGE (列表) | 所有加载的图片 tensor |
+| `文件名列表` | STRING (列表) | 文件名（不含路径） |
+| `文件路径列表` | STRING (列表) | 相对路径（从压缩包根目录开始） |
+| `文件数量` | INT | 总共加载的文件数量 |
+
+#### 使用示例
+
+**示例1：加载压缩包中的所有图片**
+
+```
+CompressedFileLoader
+  - archive_file: "products.zip"
+  - file_filter: "images_only"
+  - max_files: 100
+    ↓
+SmartProductCollageBatch (批量拼接)
+    ↓
+PreviewImage
+```
+
+**示例2：结合批量拼接**
+
+```
+CompressedFileLoader (加载100张图)
+  ↓ 图片列表
+SmartProductCollageBatch
+  - images_per_collage: 3
+  - layout: auto
+  ↓
+PreviewImage (输出33张拼接图)
+```
+
+**示例3：使用文件名**
+
+```
+CompressedFileLoader
+  ↓ 图片列表 + 文件名列表
+(可以用文件名做标签或其他处理)
+```
+
+#### 注意事项
+
+1. **RAR 支持**：
+   - 需要安装 `rarfile` Python 包：`pip install rarfile`
+   - 需要安装系统工具 `unrar`：
+     - Ubuntu/Debian: `sudo apt-get install unrar`
+     - macOS: `brew install unrar`
+     - Windows: 从 https://www.rarlab.com/rar_add.htm 下载
+
+2. **性能建议**：
+   - 大型压缩包建议设置 `max_files` 限制
+   - 使用 `file_filter: images_only` 可以提高性能
+   - 解压的文件会临时存储，节点销毁时自动清理
+
+3. **支持的图片格式**：
+   - PNG, JPG/JPEG, BMP, GIF, WebP, TIFF/TIF
+
+---
+
+### 节点2：智能产品拼接·内部抠图v2.0 (推荐)
 
 **适用场景：** 所有产品拼接需求
 
@@ -292,6 +405,13 @@ label_margin: 40      # 标签与产品间距
 3. 调整 `label_font_size` 和 `label_margin`
 
 ## 📝 更新日志
+
+### v1.1 (2025-01-24)
+- ✨ 新增：压缩文件加载器节点
+- ✨ 支持 ZIP、RAR 等压缩文件格式
+- ✨ 批量加载和输出文件列表
+- ✨ 灵活的文件过滤选项
+- 📦 添加 requirements.txt 依赖文件
 
 ### v2.0 (2025-01-28)
 - ✨ 重大更新：内部智能抠图（无需外部mask）
